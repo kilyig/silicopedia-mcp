@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "silicopedia": {
+      "type": "stdio",
+      "command": ".venv/bin/python",
+      "args": ["server.py"],
+      "env": {
+        "MEDIAWIKI_URL": "https://silicopedia.org/api.php",
+        "MW_USERNAME": "",
+        "MW_PASSWORD": ""
+      }
+    }
+  }
+}
