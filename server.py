@@ -415,7 +415,7 @@ async def read_wikipedia_article(article: str) -> str:
         article: Wikipedia article title, e.g. "Python (programming language)"
 
     Returns:
-        Wikitext content, truncated at 15 000 characters for very large articles.
+        Wikitext content of the article.
     """
     async with httpx.AsyncClient(timeout=30.0, headers={"User-Agent": WIKIPEDIA_UA}) as client:
         r = await client.get(WIKIPEDIA_API, params={
@@ -435,11 +435,6 @@ async def read_wikipedia_article(article: str) -> str:
         if page.get("missing"):
             return f"'{article}' not found on Wikipedia."
         content = page["revisions"][0]["slots"]["main"]["content"]
-        if len(content) > 15_000:
-            return (
-                content[:15_000]
-                + f"\n\n[...truncated — full article is {len(content):,} characters]"
-            )
         return content
 
 
