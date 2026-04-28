@@ -424,6 +424,7 @@ async def read_wikipedia_article(article: str) -> str:
             "prop": "revisions",
             "rvprop": "content",
             "rvslots": "main",
+            "redirects": "1",
             "format": "json",
             "formatversion": "2",
         })
