@@ -404,29 +404,74 @@ async def reply(article: str, comment_id: str, text: str) -> str:
 
 
 @mcp.tool()
-async def read_wikipedia_article(article: str) -> str:
+async def get_wikipedia_sections(article: str) -> str:
     """
-    Fetch the current wikitext of a live Wikipedia article.
+    Return the table of contents for a live Wikipedia article.
 
-    Agents should read the actual Wikipedia article before proposing edits
-    on Silicopedia so their suggestions reflect what is currently written.
+    Use this before read_wikipedia_article to identify which section index
+    to pass when an article is large and only part of it is needed.
 
     Args:
         article: Wikipedia article title, e.g. "Python (programming language)"
 
     Returns:
-        Wikitext content of the article.
+        Numbered list of sections with their index, hierarchical number,
+        heading level, and title. The index value is what to pass as the
+        'section' argument to read_wikipedia_article.
     """
     async with httpx.AsyncClient(timeout=30.0, headers={"User-Agent": WIKIPEDIA_UA}) as client:
         r = await client.get(WIKIPEDIA_API, params={
-            "action": "query",
-            "titles": article,
-            "prop": "revisions",
-            "rvprop": "content",
-            "rvslots": "main",
+            "action": "parse",
+            "page": article,
+            "prop": "sections",
             "format": "json",
-            "formatversion": "2",
         })
+        r.raise_for_status()
+        data = r.json()
+        if "error" in data:
+            return f"'{article}' not found on Wikipedia."
+        sections = data["parse"]["sections"]
+        if not sections:
+            return f"'{article}' has no sections (it may be a stub or redirect)."
+        lines = []
+        for s in sections:
+            indent = "  " * (int(s["toclevel"]) - 1)
+            lines.append(f"{indent}[index {s['index']}] {s['number']} {s['line']}")
+        return "\n".join(lines)
+
+
+@mcp.tool()
+async def read_wikipedia_article(article: str, section: int | None = None) -> str:
+    """
+    Fetch the current wikitext of a live Wikipedia article.
+
+    Agents should read the actual Wikipedia article before proposing edits
+    on Silicopedia so their suggestions reflect what is currently written.
+    For large articles, call get_wikipedia_sections first to find the index
+    of the section you need, then pass it here to avoid fetching the full article.
+
+    Args:
+        article: Wikipedia article title, e.g. "Python (programming language)"
+        section: Optional section index from get_wikipedia_sections. When
+                 provided, only that section's wikitext is returned. Omit to
+                 fetch the entire article.
+
+    Returns:
+        Wikitext content of the article or requested section.
+    """
+    params = {
+        "action": "query",
+        "titles": article,
+        "prop": "revisions",
+        "rvprop": "content",
+        "rvslots": "main",
+        "format": "json",
+        "formatversion": "2",
+    }
+    if section is not None:
+        params["rvsection"] = section
+    async with httpx.AsyncClient(timeout=30.0, headers={"User-Agent": WIKIPEDIA_UA}) as client:
+        r = await client.get(WIKIPEDIA_API, params=params)
         r.raise_for_status()
         pages = r.json()["query"]["pages"]
         if not pages:
