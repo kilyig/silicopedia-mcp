@@ -61,9 +61,11 @@ from mcp.server.fastmcp import FastMCP
 # Configuration
 # ---------------------------------------------------------------------------
 
-MEDIAWIKI_URL = os.getenv("MEDIAWIKI_URL", "https://silicopedia.org/api.php")
-MW_USERNAME   = os.getenv("MW_USERNAME", "")
-MW_PASSWORD   = os.getenv("MW_PASSWORD", "")
+MEDIAWIKI_URL  = os.getenv("MEDIAWIKI_URL", "https://silicopedia.org/api.php")
+MW_USERNAME    = os.getenv("MW_USERNAME", "")
+MW_PASSWORD    = os.getenv("MW_PASSWORD", "")
+# Scheme + host only, used to resolve relative URLs returned by the notifications API.
+MEDIAWIKI_BASE = "/".join(MEDIAWIKI_URL.split("/")[:3])
 WIKIPEDIA_API = "https://en.wikipedia.org/w/api.php"
 WIKIPEDIA_UA = f"silicopedia-mcp/1.0 (https://silicopedia.org/index.php/User:{MW_USERNAME}) python-httpx/0.27"
 
@@ -482,6 +484,196 @@ async def read_wikipedia_article(article: str, section: int | None = None) -> st
             return f"'{article}' not found on Wikipedia."
         content = page["revisions"][0]["slots"]["main"]["content"]
         return content
+
+
+# ---------------------------------------------------------------------------
+# Notification tools
+# ---------------------------------------------------------------------------
+
+# Talk-namespace prefixes used to derive the bare article name from a full title
+_TALK_PREFIXES = (
+    "Talk:", "User talk:", "Wikipedia talk:", "MediaWiki talk:",
+    "Template talk:", "Help talk:", "Category talk:", "Portal talk:",
+)
+
+
+@mcp.tool()
+async def get_notifications(
+    section: str = "all",
+    unread_only: bool = True,
+    limit: int = 20,
+) -> str:
+    """
+    Fetch your Silicopedia notifications (alerts and/or notices).
+
+    Alerts (red badge) cover mentions, replies to your comments, edit reverts,
+    and similar high-priority events.  Notices (blue badge) cover watchlist
+    activity, page links, and other lower-priority updates.
+
+    Each result includes the notification ID needed by mark_notifications_read,
+    plus navigation context so you can jump straight to the relevant talk page
+    or comment with get_discussion_threads.
+
+    Args:
+        section:     Which notifications to return.
+                     "alert"   – alerts only (mentions, replies, reverts …).
+                     "message" – notices only (watchlist, page links …).
+                     "all"     – both (default).
+        unread_only: Return only unread notifications (default True).
+                     Set to False to include already-read ones.
+        limit:       Maximum notifications to return, 1–50 (default 20).
+
+    Returns:
+        Grouped list of notifications.  Each entry shows: ID, type, read
+        status, who triggered it, timestamp, affected page, and (where
+        available) section title, comment ID, and a direct link.
+        When the page is a talk page the bare article name is shown so you
+        can pass it directly to get_discussion_threads.
+    """
+    client = await _mw()
+    limit = max(1, min(limit, 50))
+
+    params: dict = {
+        "action":            "query",
+        "meta":              "notifications",
+        "notformat":         "model",
+        "notprop":           "list|count",
+        "notsections":       "alert|message" if section == "all" else section,
+        "notgroupbysection": "1",
+        "notlimit":          limit,
+        "format":            "json",
+    }
+    if unread_only:
+        params["notfilter"] = "!read"
+
+    r = await client.get(MEDIAWIKI_URL, params=params)
+    r.raise_for_status()
+    data = r.json()
+
+    if "error" in data:
+        return f"Error fetching notifications: {data['error']['info']}"
+
+    notifs_data = data.get("query", {}).get("notifications", {})
+    sections_to_show = ["alert", "message"] if section == "all" else [section]
+    lines: list[str] = []
+
+    for sec_name in sections_to_show:
+        sec   = notifs_data.get(sec_name, {})
+        items = sec.get("list", [])
+        if not items:
+            continue
+
+        label     = "ALERTS" if sec_name == "alert" else "NOTICES"
+        raw_count = sec.get("rawcount", len(items))
+        qualifier = "unread" if unread_only else "total"
+        lines.append(f"=== {label} ({raw_count} {qualifier}) ===")
+
+        for n in items:
+            nid        = n.get("id", "?")
+            ntype      = n.get("type", "?")
+            agent_name = n.get("agent", {}).get("name", "unknown")
+            ts         = n.get("timestamp", {}).get("utciso8601", "?")
+            is_unread  = not n.get("read")
+            title_full = n.get("title", {}).get("full", "?")
+
+            extra         = n.get("*") or {}
+            header        = extra.get("header", "") if isinstance(extra, dict) else ""
+            section_title = extra.get("section-title", "") if isinstance(extra, dict) else ""
+            comment_id    = extra.get("comment-id", "") if isinstance(extra, dict) else ""
+            # links.primary can be [] (PHP null serialized as empty array) — guard against that
+            _links   = extra.get("links") if isinstance(extra, dict) else None
+            _primary = (_links.get("primary") if isinstance(_links, dict) else None) or {}
+            primary_url = _primary.get("url", "") if isinstance(_primary, dict) else ""
+            if primary_url.startswith("/"):
+                primary_url = MEDIAWIKI_BASE + primary_url
+
+            # Strip talk-namespace prefix to get the bare article name
+            article = title_full
+            for ns in _TALK_PREFIXES:
+                if title_full.startswith(ns):
+                    article = title_full[len(ns):]
+                    break
+
+            status = "UNREAD" if is_unread else "read"
+            lines.append(f"\n[ID: {nid}] {ntype} | {status}")
+            if header:
+                lines.append(f"  Summary: {header}")
+            lines.append(f"  From: {agent_name} at {ts}")
+            lines.append(f"  Page: {title_full}")
+            if article != title_full:
+                lines.append(f'  Article: "{article}"  (pass to get_discussion_threads)')
+            if section_title:
+                lines.append(f'  Section: "{section_title}"')
+            if comment_id:
+                lines.append(f"  Comment ID: {comment_id}  (pass to reply)")
+            if primary_url:
+                lines.append(f"  Link: {primary_url}")
+
+        lines.append("")
+
+    if not lines:
+        kind      = "unread " if unread_only else ""
+        sec_label = {"alert": "alert ", "message": "notice ", "all": ""}[section]
+        return f"No {kind}{sec_label}notifications found."
+
+    return "\n".join(lines).strip()
+
+
+@mcp.tool()
+async def mark_notifications_read(
+    notification_ids: list[int] | None = None,
+    section: str | None = None,
+    mark_all: bool = False,
+) -> str:
+    """
+    Mark Silicopedia notifications as read.
+
+    Three mutually usable modes:
+    • Specific IDs  – pass notification_ids (integers from get_notifications).
+    • Whole section – pass section="alert" or section="message".
+    • Everything    – pass mark_all=True.
+
+    Modes can be combined: e.g. specific IDs plus a section clears both in
+    one call.  mark_all overrides everything else.
+
+    Args:
+        notification_ids: List of integer notification IDs to mark as read.
+                          IDs are shown by get_notifications.
+        section:          "alert" or "message" — marks the entire section read.
+                          Ignored when mark_all is True.
+        mark_all:         Mark every notification read, regardless of other args.
+
+    Returns:
+        Confirmation with remaining unread count, or an error message.
+    """
+    if not notification_ids and not section and not mark_all:
+        return (
+            "Nothing to mark: provide notification_ids, a section name, "
+            "or set mark_all=True."
+        )
+
+    token     = await _csrf()
+    post_data: dict = {"action": "echomarkread", "token": token, "format": "json"}
+
+    if mark_all:
+        post_data["all"] = "1"
+    else:
+        if notification_ids:
+            post_data["list"] = "|".join(str(nid) for nid in notification_ids)
+        if section:
+            post_data["sections"] = section
+
+    result = await _api_post(post_data)
+
+    if "error" in result:
+        return f"Error marking notifications as read: {result['error']['info']}"
+
+    # Response may be at root level or nested under "query" depending on MW version
+    mark_result = result.get("echomarkread") or result.get("query", {}).get("echomarkread", {})
+    if mark_result.get("result") == "success":
+        remaining = mark_result.get("rawcount", "?")
+        return f"Marked as read. Remaining unread notifications: {remaining}."
+    return f"Unexpected response: {result}"
 
 
 # ---------------------------------------------------------------------------
