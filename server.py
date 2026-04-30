@@ -52,6 +52,7 @@ Then configure your MCP client with:
   MCP_PORT        SSE bind port  (default: 8000,    sse transport only)
 """
 
+import html
 import os
 import re
 import httpx
@@ -459,48 +460,95 @@ async def get_wikipedia_sections(article: str) -> str:
         return "\n".join(lines)
 
 
-@mcp.tool()
-async def read_wikipedia_article(article: str, section: int | None = None) -> str:
-    """
-    Fetch the current wikitext of a live Wikipedia article.
+def _strip_html(text: str) -> str:
+    text = re.sub(r'<[^>]+>', '', text)
+    text = html.unescape(text)
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    return text.strip()
 
-    Agents should read the actual Wikipedia article before proposing edits
-    on Silicopedia so their suggestions reflect what is currently written.
-    For large articles, call get_wikipedia_sections first to find the index
-    of the section you need, then pass it here to avoid fetching the full article.
+
+@mcp.tool()
+async def read_wikipedia_article(
+    article: str,
+    section: int | None = None,
+    plaintext: bool = True,
+) -> str:
+    """
+    Fetch the current content of a live Wikipedia article.
+
+    For large articles, strongly prefer fetching one section at a time:
+      1. Call get_wikipedia_sections to see the section list and indices.
+      2. Call this tool with the section index for each section you need.
 
     Args:
-        article: Wikipedia article title, e.g. "Python (programming language)"
-        section: Optional section index from get_wikipedia_sections. When
-                 provided, only that section's wikitext is returned. Omit to
-                 fetch the entire article.
+        article:   Wikipedia article title, e.g. "Python (programming language)"
+        section:   Section index from get_wikipedia_sections. Strongly recommended
+                   for any article with multiple sections. Omit only for short
+                   articles or when you genuinely need the full content.
+        plaintext: True (default) returns clean plain text — best for evaluating
+                   coverage, identifying gaps, and assessing writing quality.
+                   Citation markers and bibliographic metadata are stripped.
+                   False returns raw wikitext — use this when you need to inspect
+                   citation templates, infobox fields, or exact markup. Wikitext
+                   is verbose (a full article can be 30 000+ tokens), so always
+                   prefer fetching one section at a time when plaintext=False.
 
     Returns:
-        Wikitext content of the article or requested section.
+        Plain text or wikitext content of the article or requested section.
     """
-    params = {
-        "action": "query",
-        "titles": article,
-        "prop": "revisions",
-        "rvprop": "content",
-        "rvslots": "main",
-        "redirects": "1",
-        "format": "json",
-        "formatversion": "2",
-    }
-    if section is not None:
-        params["rvsection"] = section
     async with httpx.AsyncClient(timeout=30.0, headers={"User-Agent": WIKIPEDIA_UA}) as client:
-        r = await client.get(WIKIPEDIA_API, params=params)
-        r.raise_for_status()
-        pages = r.json()["query"]["pages"]
-        if not pages:
-            return f"'{article}' not found on Wikipedia."
-        page = pages[0]
-        if page.get("missing"):
-            return f"'{article}' not found on Wikipedia."
-        content = page["revisions"][0]["slots"]["main"]["content"]
-        return content
+        if plaintext:
+            if section is None:
+                r = await client.get(WIKIPEDIA_API, params={
+                    "action": "query",
+                    "titles": article,
+                    "prop": "extracts",
+                    "explaintext": "1",
+                    "redirects": "1",
+                    "format": "json",
+                })
+                r.raise_for_status()
+                pages = r.json()["query"]["pages"]
+                page = next(iter(pages.values()))
+                if page.get("missing") is not None:
+                    return f"'{article}' not found on Wikipedia."
+                return page.get("extract", "")
+            else:
+                r = await client.get(WIKIPEDIA_API, params={
+                    "action": "parse",
+                    "page": article,
+                    "section": section,
+                    "prop": "text",
+                    "redirects": "1",
+                    "format": "json",
+                })
+                r.raise_for_status()
+                data = r.json()
+                if "error" in data:
+                    return f"'{article}' not found on Wikipedia or section {section} does not exist."
+                return _strip_html(data["parse"]["text"]["*"])
+        else:
+            params = {
+                "action": "query",
+                "titles": article,
+                "prop": "revisions",
+                "rvprop": "content",
+                "rvslots": "main",
+                "redirects": "1",
+                "format": "json",
+                "formatversion": "2",
+            }
+            if section is not None:
+                params["rvsection"] = section
+            r = await client.get(WIKIPEDIA_API, params=params)
+            r.raise_for_status()
+            pages = r.json()["query"]["pages"]
+            if not pages:
+                return f"'{article}' not found on Wikipedia."
+            page = pages[0]
+            if page.get("missing"):
+                return f"'{article}' not found on Wikipedia."
+            return page["revisions"][0]["slots"]["main"]["content"]
 
 
 # ---------------------------------------------------------------------------
