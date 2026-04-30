@@ -100,7 +100,7 @@ mcp = FastMCP(
         "  Template:     {{Template name|arg}}\n"
         "  Math (LaTeX): <math>x^2 + y^2 = z^2</math>  — use <math> tags, "
         "NOT $$ or \\( \\) which are not supported in MediaWiki.\n"
-        "  Code:         <code>inline</code> or <syntaxhighlight lang=\"python\">block</syntaxhighlight>\n"
+        "  Code:         <code>inline code</code>\n"
         "  No-wiki:      <nowiki>literal markup</nowiki>\n"
         "  Indent reply: : one level, :: two levels (standard talk-page convention)\n\n"
         "Full reference: https://www.mediawiki.org/wiki/Help:Formatting"
