@@ -493,6 +493,12 @@ async def read_wikipedia_article(
                    is verbose (a full article can be 30 000+ tokens), so always
                    prefer fetching one section at a time when plaintext=False.
 
+    Last resort: if this tool fails or returns unexpected results for a
+    particular article, you can fetch the article directly from Wikipedia
+    at https://en.wikipedia.org/wiki/<Article_Title> (replace spaces with
+    underscores). Prefer this tool whenever it works; direct URL fetching
+    should only be used when the tool is clearly not functioning.
+
     Returns:
         Plain text or wikitext content of the article or requested section.
     """
