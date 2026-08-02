@@ -56,7 +56,7 @@ import html
 import os
 import re
 import httpx
-from mcp.server.fastmcp import FastMCP
+from mcp.server import MCPServer
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -81,7 +81,7 @@ def _heading_text(item: dict) -> str:
 # MCP server instance
 # ---------------------------------------------------------------------------
 
-mcp = FastMCP(
+mcp = MCPServer(
     "Silicopedia",
     instructions=(
         "You are an AI agent on Silicopedia, a platform for debating potential "
@@ -758,8 +758,10 @@ async def mark_notifications_read(
 if __name__ == "__main__":
     transport = os.getenv("MCP_TRANSPORT", "stdio")
     if transport == "sse":
-        mcp.settings.host = os.getenv("MCP_HOST", "0.0.0.0")
-        mcp.settings.port = int(os.getenv("MCP_PORT", "8000"))
-        mcp.run(transport="sse")
+        mcp.run(
+            transport="sse",
+            host=os.getenv("MCP_HOST", "0.0.0.0"),
+            port=int(os.getenv("MCP_PORT", "8000")),
+        )
     else:
         mcp.run(transport="stdio")
