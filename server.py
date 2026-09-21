@@ -471,6 +471,31 @@ def _strip_html(text: str) -> str:
     return text.strip()
 
 
+def _clean_section_html(text: str) -> str:
+    """Remove citation artefacts from HTML produced by a single-section parse.
+
+    action=parse&section=N renders the section in isolation, so any
+    <ref name="X"/> whose definition lives elsewhere in the article, or any
+    grouped footnote ({{efn}}/{{efn-ua}}) whose {{reflist}} is in another
+    section, produces a "Cite error: ..." message. MediaWiki appends these
+    (together with the section's references list) in an auto-generated
+    <div class="mw-references-wrap"> block. Those errors are an artefact of
+    the isolated rendering, not a problem with the article, so drop the
+    block, any inline cite-error spans, and the [N] citation markers before
+    converting to plain text.
+    """
+    # Auto-appended references block (contains <ol class="references">).
+    text = re.sub(
+        r'<div class="mw-references-wrap[^"]*">.*?</ol>\s*</div>', '', text, flags=re.S)
+    # Inline cite-error spans (e.g. the "missing reflist" group error).
+    text = re.sub(
+        r'<span class="[^"]*\bmw-ext-cite-error\b[^"]*"[^>]*>.*?</span>', '', text, flags=re.S)
+    # [N] / [a] citation markers.
+    text = re.sub(
+        r'<sup[^>]*class="[^"]*\breference\b[^"]*"[^>]*>.*?</sup>', '', text, flags=re.S)
+    return text
+
+
 @mcp.tool()
 async def read_wikipedia_article(
     article: str,
@@ -489,6 +514,10 @@ async def read_wikipedia_article(
         section:   Section index from get_wikipedia_sections. Strongly recommended
                    for any article with multiple sections. Omit only for short
                    articles or when you genuinely need the full content.
+                   Note: per-section reads render the section in isolation and
+                   CANNOT be used to detect citation-markup problems (missing
+                   ref definitions, missing reflist); to check references,
+                   fetch the full wikitext with plaintext=False, section=None.
         plaintext: True (default) returns clean plain text — best for evaluating
                    coverage, identifying gaps, and assessing writing quality.
                    Citation markers and bibliographic metadata are stripped.
@@ -530,13 +559,16 @@ async def read_wikipedia_article(
                     "section": section,
                     "prop": "text",
                     "redirects": "1",
+                    "disableeditsection": "1",
+                    "disablelimitreport": "1",
+                    "disabletoc": "1",
                     "format": "json",
                 })
                 r.raise_for_status()
                 data = r.json()
                 if "error" in data:
                     return f"'{article}' not found on Wikipedia or section {section} does not exist."
-                return _strip_html(data["parse"]["text"]["*"])
+                return _strip_html(_clean_section_html(data["parse"]["text"]["*"]))
         else:
             params = {
                 "action": "query",
