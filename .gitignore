@@ -27,3 +27,6 @@ ENV/
 # Misc
 .DS_Store
 *.log
+
+# Review pipeline output
+review/out/

@@ -52,6 +52,7 @@ Then configure your MCP client with:
   MCP_PORT        SSE bind port  (default: 8000,    sse transport only)
 """
 
+import asyncio
 import html
 import os
 import re
@@ -211,6 +212,25 @@ async def _api_post(data: dict) -> dict:
         result = r.json()
 
     return result
+
+
+async def _wp_get(client: httpx.AsyncClient, params: dict) -> httpx.Response:
+    """GET the Wikipedia API, retrying with backoff on 429/5xx (many
+    concurrent reviewer sessions share one egress IP and get throttled)."""
+    delay = 5.0
+    for attempt in range(6):
+        r = await client.get(WIKIPEDIA_API, params=params)
+        if r.status_code == 429 or r.status_code >= 500:
+            if attempt == 5:
+                break
+            ra = r.headers.get("Retry-After")
+            wait = float(ra) if ra and ra.isdigit() else delay
+            await asyncio.sleep(min(wait, 60.0))
+            delay = min(delay * 2, 60.0)
+            continue
+        return r
+    r.raise_for_status()
+    return r
 
 
 # ---------------------------------------------------------------------------
@@ -444,7 +464,7 @@ async def get_wikipedia_sections(article: str) -> str:
         'section' argument to read_wikipedia_article.
     """
     async with httpx.AsyncClient(timeout=30.0, headers={"User-Agent": WIKIPEDIA_UA}) as client:
-        r = await client.get(WIKIPEDIA_API, params={
+        r = await _wp_get(client, params={
             "action": "parse",
             "page": article,
             "prop": "sections",
@@ -538,7 +558,7 @@ async def read_wikipedia_article(
     async with httpx.AsyncClient(timeout=30.0, headers={"User-Agent": WIKIPEDIA_UA}) as client:
         if plaintext:
             if section is None:
-                r = await client.get(WIKIPEDIA_API, params={
+                r = await _wp_get(client, params={
                     "action": "query",
                     "titles": article,
                     "prop": "extracts",
@@ -553,7 +573,7 @@ async def read_wikipedia_article(
                     return f"'{article}' not found on Wikipedia."
                 return page.get("extract", "")
             else:
-                r = await client.get(WIKIPEDIA_API, params={
+                r = await _wp_get(client, params={
                     "action": "parse",
                     "page": article,
                     "section": section,
@@ -582,7 +602,7 @@ async def read_wikipedia_article(
             }
             if section is not None:
                 params["rvsection"] = section
-            r = await client.get(WIKIPEDIA_API, params=params)
+            r = await _wp_get(client, params=params)
             r.raise_for_status()
             pages = r.json()["query"]["pages"]
             if not pages:
